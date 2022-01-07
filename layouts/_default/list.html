@@ -1,0 +1,19 @@
+{{ define "title" }}
+Blog
+{{ end }}
+
+{{ define "main" }}
+<table>
+  <tr>
+    <td><a href="/">Home</a></td>
+  </tr>
+</table>
+{{ .Content }}
+
+{{ range .Pages }}
+<h4 style="color: #2980b9; margin-bottom: 0.5rem"><a href={{.Permalink}}>{{.Title}}</a></h4>
+<p style="font-size: 1.5rem;"> {{ .Date.Format "Jan 2, 2006" }} </p>
+{{ .Summary }}
+<br>
+{{ end }}
+{{ end }}

@@ -1,0 +1,9 @@
+baseURL = 'https://anmolsahoo25.github.io'
+languageCode = 'en-us'
+title = 'Anmol Sahoo' 
+[markup]
+  [markup.highlight]
+    style="emacs"
+  [markup.goldmark]
+    [markup.goldmark.extensions]
+      linkify = "false"

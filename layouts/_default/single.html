@@ -1,0 +1,17 @@
+{{ define "title" }}
+{{.Title}}
+{{ end }}
+
+{{ define "main" }}
+<table>
+  <tr>
+    <td><a href="/">Home</a></td>
+    <td><a href="/blog">Blog</a></td>
+    <td>{{if .Next}}<a href={{.Next.Permalink}}>Next</a>{{else}}<p style="margin-bottom: 0rem; color: #7f8c8d">Next</p>{{end}}</td>
+    <td>{{if .Prev}}<a href={{.Prev.Permalink}}>Prev</a>{{else}}<p style="margin-bottom: 0rem; color: #7f8c8d">Prev</p>{{end}}</td>
+  </tr>
+</table>
+<h1>{{.Title}}</h1>
+<p>{{.Date.Format "Jan 2, 2006"}}</p>
+{{ .Content }}
+{{end}}

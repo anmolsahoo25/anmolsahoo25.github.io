@@ -114,10 +114,30 @@ valid OCaml code, it is just for representation) -
 Clet (x, Cconst_int 10, Cop(Caddi, [x,Cconst_int 5]))
 ```
 
-Simiarly, we have two specific operations called `Cload` and `Cstore` that we would like
-to instrument. Thus our function takes a `Cmm` expression and recurses through 
-the structure, and adds a call to the correct ThreadSanitizer function after
-memory accesses.
+The operations we are interested in are called `Cload` and `Cstore` -
+
+```ocaml
+| Cload of { memory_chunk: memory_chunk ; mutability: Asttypes.mutable_flag ; is_atomic: bool }
+| Cstore of memory_chunk * Lambda.initialization_or_assignment
+```
+
+We would like to call the necessary `__tsan_read/writeN` functions after these
+operations. Thus our instrumentation pass takes a `Cmm` expression and recurses
+through the structure, and adds a call to the correct ThreadSanitizer function
+after memory accesses. The `memory_chunk` parameter denotes the size of the access
+and the argument to the operation is the memory address in question. There are the
+two pieces of information we need for calling ThreadSanitizer functions. 
+
+There are a few things we need to keep in mind which are particular to OCaml.
+Loads in OCaml are marked to denote if they are to mutable fields or not. Thus,
+we only need to instrument mutable loads, as there will not be any stores to
+immutable fields. This should reduce the overhead of instrumentation.
+
+Also, for stores we only need to instrument assignment stores, as
+initialization stores have a barrier to ensure that they are visible to all
+threads in a synchronized fashion.
+
+Thanks to [KC](https://kcsrk.info) for pointing this out!
 
 #### Experiments
 All right! Let's see if we can finally detect races now. A very simple example -

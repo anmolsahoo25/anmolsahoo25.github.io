@@ -1,0 +1,181 @@
+<!doctype html><html>
+<head>
+<meta charset=utf-8>
+<title>
+ThreadSanitizer + OCaml
+</title>
+<link rel=preconnect href=https://fonts.googleapis.com>
+<link rel=preconnect href=https://fonts.gstatic.com crossorigin>
+<link rel=stylesheet href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;700&display=swap">
+<link rel=stylesheet href=/sakura.css>
+</head>
+<body>
+<div class=container>
+<table>
+<tr>
+<td><a href=/>Home</a></td>
+<td><a href=/blog>Blog</a></td>
+<td><p style=margin-bottom:0;color:#7f8c8d>Next</p></td>
+<td><p style=margin-bottom:0;color:#7f8c8d>Prev</p></td>
+</tr>
+</table>
+<h1>ThreadSanitizer + OCaml</h1>
+<p>Jan 1, 2022</p>
+<p>Races! A word that programmers writing concurrent/parallel code would like
+to (mostly) avoid. Thankfully, we have ThreadSanitizer - a race detector developed as
+part of LLVM. Now with OCaml on its way to getting multicore support, I thought
+it would be a good time to see how we could integrate ThreadSanitizer with the
+OCaml compiler. This post would should be a fun trip through parallelism in
+OCaml, the OCaml compiler backend, ThreadSanitizer and catching those pesky races!</p>
+<p>Code at - <a href=https://github.com/anmolsahoo25/ocaml/tree/multicore-pr+tsan target=_blank>Github repository</a>
+</p>
+<h4 id=parallelism-in-ocaml>Parallelism in OCaml</h4>
+<p>For those of you completely new to this world, OCaml is a strongly-typed,
+multi-paradigm programming language, of which I enjoy the functional aspects
+the most!</p>
+<p>Recently, OCaml has been getting close to shared-memory parallelism support.
+Put very simply, multicore OCaml will add support to spawn parallel threads
+called <code>Domains</code> which are mapped to native system threads. The garbage
+collector has also been modified to allow these threads to execute in parallel
+(with some parts being performed in a stop-the-world fashion). The multicore
+OCaml changes and features go well beyond this, but for this blog post, this
+should suffice.</p>
+<p>A big shoutout to everyone working so hard to make multicore OCaml a reality!</p>
+<h4 id=races-in-ocaml>Races in OCaml</h4>
+<p>Well, now that OCaml has parallelism, it also has races. Let&rsquo;s see how this
+could manifest in practice -</p>
+<div class=highlight><pre tabindex=0 style=background-color:#f8f8f8;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-ocaml data-lang=ocaml><span style=color:#a2f;font-weight:700>type</span> t <span style=color:#666>=</span> <span style=color:#666>{</span> <span style=color:#a2f;font-weight:700>mutable</span> x <span style=color:#666>:</span> <span style=color:#0b0;font-weight:700>int</span> <span style=color:#666>}</span>
+
+<span style=color:#a2f;font-weight:700>let</span> <span style=color:#666>_</span> <span style=color:#666>=</span>
+  <span style=color:#a2f;font-weight:700>let</span> v <span style=color:#666>=</span> <span style=color:#666>{</span> x <span style=color:#666>=</span> 10 <span style=color:#666>}</span> <span style=color:#a2f;font-weight:700>in</span>
+  <span style=color:#a2f;font-weight:700>let</span> t1 <span style=color:#666>=</span> <span style=color:#00f;font-weight:700>Domain</span>.spawn<span style=color:#666>(</span><span style=color:#a2f;font-weight:700>fun</span> () <span style=color:#666>-&gt;</span> v<span style=color:#666>.</span>x <span style=color:#666>&lt;-</span> 0<span style=color:#666>)</span> <span style=color:#a2f;font-weight:700>in</span>
+  <span style=color:#a2f;font-weight:700>let</span> t2 <span style=color:#666>=</span> <span style=color:#00f;font-weight:700>Domain</span>.spawn<span style=color:#666>(</span><span style=color:#a2f;font-weight:700>fun</span> () <span style=color:#666>-&gt;</span> v<span style=color:#666>.</span>x<span style=color:#666>)</span> <span style=color:#a2f;font-weight:700>in</span>
+  <span style=color:#00f;font-weight:700>List</span>.map <span style=color:#00f;font-weight:700>Domain</span>.join <span style=color:#666>[</span>t1<span style=color:#666>;</span> t2<span style=color:#666>]</span>
+</code></pre></div><p>The one above is a very simple example but a good example of a common race.
+Mutable fields are one place where races can arise. Other places could be
+arrays, C FFI functions and others. We want to detect and avoid such races,
+because this could lead to unexpected values in the code!</p>
+<h4 id=threadsanitizer>ThreadSanitizer</h4>
+<p>ThreadSanitizer is a dynamic race detector developed as part of the LLVM library.
+It consists of a runtime library which tracks accesses and reports races if
+detected and a compiler pass that instruments C/C++ code with the necessary
+function calls to signal accesses to the runtime library. It has additional features
+that allows detecting misuse of locks as well. You can read more about
+ThreadSanitizer on these links - <a href=https://clang.llvm.org/docs/ThreadSanitizer.html target=_blank>LLVM Docs</a>
+,
+<a href=https://github.com/google/sanitizers/wiki/ThreadSanitizerCppManual target=_blank>Github Wiki</a>
+,
+<a href=https://static.googleusercontent.com/media/research.google.com/en//pubs/archive/35604.pdf target=_blank>Paper</a>
+.</p>
+<p>For our discussion, it would suffice to know what is needed to instrument OCaml
+generated code. ThreadSanitizer requires a call to <code>__tsan_func_entry</code> and
+<code>__tsan_func_exit</code> on function entry and exit respectively. Then, it has functions
+called <code>__tsan_readN</code> and <code>__tsan_writeN</code> which should be called after every
+memory access.</p>
+<p>In the context of OCaml, there is an extra consideration we need to keep in
+mind. Since the OCaml runtime uses a <code>pthread_mutex</code> to synchnorize certain
+activities such as spawning domains, these would lead to false synchronization
+events. Thus races would actually be missed. The solution to this is to use a
+ThreadSanitizer feature called <code>suppressions</code>, which allows us to suppress
+events. Note that we still need to instrument the runtime library to maintain
+correct stack frames, allocations, thread creation and racy accesses using
+<code>caml_modify</code>, but we will suppress the <code>caml_plat_lock</code> function to ignore
+synchronization events generated by access to the mutex.</p>
+<h4 id=instrumenting-the-ocaml-compiler>Instrumenting the OCaml compiler</h4>
+<p>This section presumes some knowledge of the OCaml compiler internals, but I
+will try my best to explain so that everyone can follow along. OCaml code goes
+through a bunch of intermediate representations before being emitted as machine
+code. Each representation removes a few high-level abstractions and brings it
+closer to assembly. For example <code>Clambda</code> is a high-level representation with
+functional calls, function abstraction and other such elements whereas <code>Mach</code>
+is a low-level representation which basically reprensents a list of machine
+instructions.</p>
+<p>One of these representations is <code>Cmm</code> where we will implement our
+instrumentation pass. <code>Cmm</code> terms represent program
+expressions, so we can easily instrument the terms without having to worry
+about low level details such as register allocation or instruction selection.
+At the same time, <code>Cmm</code> has access to information such as code symbols,
+external function calls, memory allocations etc which is what we require for
+instrumenting calls to ThreadSanitizer methods.</p>
+<p>A variant of the <code>Cmm</code> type is this -</p>
+<div class=highlight><pre tabindex=0 style=background-color:#f8f8f8;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-ocaml data-lang=ocaml><span style=color:#a2f;font-weight:700>type</span> expression <span style=color:#666>=</span>
+  <span style=color:#666>...</span>
+  <span style=color:#666>|</span> <span style=color:#00f>Clet</span> <span style=color:#a2f;font-weight:700>of</span> <span style=color:#00f;font-weight:700>Backend_var</span>.<span style=color:#00f;font-weight:700>With_provenance</span>.t <span style=color:#666>*</span> expression <span style=color:#666>*</span> expression
+  <span style=color:#666>...</span>
+</code></pre></div><p>This represents a term such as <code>let x = 10 in x + 5</code>.
+For example, the above expression could be represented as (the following is not
+valid OCaml code, it is just for representation) -</p>
+<pre tabindex=0><code>Clet (x, Cconst_int 10, Cop(Caddi, [x,Cconst_int 5]))
+</code></pre><p>Simiarly, we have two specific operations called <code>Cload</code> and <code>Cstore</code> that we would like
+to instrument. Thus our function takes a <code>Cmm</code> expression and recurses through
+the structure, and adds a call to the correct ThreadSanitizer function after
+memory accesses.</p>
+<h4 id=experiments>Experiments</h4>
+<p>All right! Let&rsquo;s see if we can finally detect races now. A very simple example -</p>
+<div class=highlight><pre tabindex=0 style=background-color:#f8f8f8;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-ocaml data-lang=ocaml><span style=color:#a2f;font-weight:700>type</span> t <span style=color:#666>=</span> <span style=color:#666>{</span> <span style=color:#a2f;font-weight:700>mutable</span> x <span style=color:#666>:</span> <span style=color:#0b0;font-weight:700>int</span> <span style=color:#666>}</span>
+
+<span style=color:#a2f;font-weight:700>let</span> v <span style=color:#666>=</span> <span style=color:#666>{</span> x <span style=color:#666>=</span> 0 <span style=color:#666>}</span>
+
+<span style=color:#a2f;font-weight:700>let</span> <span style=color:#666>_</span> <span style=color:#666>=</span>
+  <span style=color:#a2f;font-weight:700>let</span> t1 <span style=color:#666>=</span> <span style=color:#00f;font-weight:700>Domain</span>.spawn<span style=color:#666>(</span><span style=color:#a2f;font-weight:700>fun</span> () <span style=color:#666>-&gt;</span> v<span style=color:#666>.</span>x <span style=color:#666>&lt;-</span> 10<span style=color:#666>;</span> <span style=color:#00f;font-weight:700>Unix</span>.sleep 1000<span style=color:#666>)</span> <span style=color:#a2f;font-weight:700>in</span>
+  <span style=color:#a2f;font-weight:700>let</span> t2 <span style=color:#666>=</span> <span style=color:#00f;font-weight:700>Domain</span>.spawn<span style=color:#666>(</span><span style=color:#a2f;font-weight:700>fun</span> () <span style=color:#666>-&gt;</span> v<span style=color:#666>.</span>x<span style=color:#666>;</span> <span style=color:#00f;font-weight:700>Unix</span>.sleep 1000<span style=color:#666>)</span> <span style=color:#a2f;font-weight:700>in</span>
+  <span style=color:#00f;font-weight:700>List</span>.map <span style=color:#00f;font-weight:700>Domain</span>.join <span style=color:#666>[</span>t1<span style=color:#666>;</span> t2<span style=color:#666>]</span>
+</code></pre></div><p>Compiling and running this returns -</p>
+<pre tabindex=0><code>WARNING: ThreadSanitizer: data race (pid=8727)
+  Read of size 8 at 0x7f40001ff7c8 by thread T4:
+    #0 camlMain__fun_596 &lt;null&gt; (a.out+0x4e21cd)
+    #1 &lt;null&gt; &lt;null&gt; (a.out+0x4e218f)
+    #2 caml_callback /home/anmol/work/ocaml/ocaml/runtime/callback.c:251:34 (libasmrun_shared.so+0x2ffee)
+    #3 domain_thread_func /home/anmol/work/ocaml/ocaml/runtime/domain.c:841:5 (libasmrun_shared.so+0x3b7b6)
+
+  Previous write of size 8 at 0x7f40001ff7c8 by thread T1:
+    #0 camlMain__fun_592 &lt;null&gt; (a.out+0x4e214d)
+    #1 &lt;null&gt; &lt;null&gt; (a.out+0x4e210f)
+    #2 caml_callback /home/anmol/work/ocaml/ocaml/runtime/callback.c:251:34 (libasmrun_shared.so+0x2ffee)
+    #3 domain_thread_func /home/anmol/work/ocaml/ocaml/runtime/domain.c:841:5 (libasmrun_shared.so+0x3b7b6)
+
+  Thread T4 (tid=8732, running) created by main thread at:
+    #0 pthread_create &lt;null&gt; (a.out+0x44e37b)
+    #1 caml_domain_spawn /home/anmol/work/ocaml/ocaml/runtime/domain.c:885:9 (libasmrun_shared.so+0x3b538)
+    ...
+    #14 main /home/anmol/work/ocaml/ocaml/runtime/main.c:37:3 (libasmrun_shared.so+0x16c75)
+
+  Thread T1 (tid=8729, running) created by main thread at:
+    #0 pthread_create &lt;null&gt; (a.out+0x44e37b)
+    #1 caml_domain_spawn /home/anmol/work/ocaml/ocaml/runtime/domain.c:885:9 (libasmrun_shared.so+0x3b538)
+    ...
+    #14 main /home/anmol/work/ocaml/ocaml/runtime/main.c:37:3 (libasmrun_shared.so+0x16c75)
+
+SUMMARY: ThreadSanitizer: data race (/home/anmol/work/ocaml/test/a.out+0x4e21cd) in camlMain__fun_596
+</code></pre><p>Let&rsquo;s check another one -</p>
+<div class=highlight><pre tabindex=0 style=background-color:#f8f8f8;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-ocaml data-lang=ocaml><span style=color:#a2f;font-weight:700>let</span> <span style=color:#666>_</span> <span style=color:#666>=</span>
+  <span style=color:#a2f;font-weight:700>let</span> v <span style=color:#666>=</span> <span style=color:#00f;font-weight:700>Array</span>.make 4 0 <span style=color:#a2f;font-weight:700>in</span>
+  <span style=color:#a2f;font-weight:700>let</span> t1 <span style=color:#666>=</span> <span style=color:#00f;font-weight:700>Domain</span>.spawn <span style=color:#666>(</span><span style=color:#a2f;font-weight:700>fun</span> () <span style=color:#666>-&gt;</span> <span style=color:#00f;font-weight:700>Array</span>.set v 0 0<span style=color:#666>;</span> <span style=color:#00f;font-weight:700>Unix</span>.sleep 1000<span style=color:#666>)</span> <span style=color:#a2f;font-weight:700>in</span>
+  <span style=color:#a2f;font-weight:700>let</span> t2 <span style=color:#666>=</span> <span style=color:#00f;font-weight:700>Domain</span>.spawn <span style=color:#666>(</span><span style=color:#a2f;font-weight:700>fun</span> () <span style=color:#666>-&gt;</span> <span style=color:#00f;font-weight:700>Array</span>.get v 0<span style=color:#666>;</span> <span style=color:#00f;font-weight:700>Unix</span>.sleep 1000<span style=color:#666>)</span> <span style=color:#a2f;font-weight:700>in</span>
+  <span style=color:#00f;font-weight:700>List</span>.map <span style=color:#00f;font-weight:700>Domain</span>.join <span style=color:#666>[</span>t1<span style=color:#666>;</span> t2<span style=color:#666>]</span>
+</code></pre></div><p>Similarly, this should print a report denoting a race. Phew, we are able to
+now detect races!</p>
+<p><em>You might be wondering about the <code>Unix.sleep</code>. Since the functions passed
+to <code>Domain.spawn</code> are short-lived, the thread terminates before the racy access
+occurs, thus we keep the thread alive with the sleep call. In larger programs,
+this should not be necessary.</em></p>
+<h4 id=future-work>Future work</h4>
+<p>There is still work left to do on this project. Most importantly, I need to
+figure out how to handle compactions. When a compaction happens, objects on the
+major heap are moved around. Thus, a race that occurs on a certain location of
+an OCaml object will signal ThreadSanitizer with two different addresses before
+and after the compaction. This would lead to the race not being reported.</p>
+<p>Another part that I left out is the instrumentation of atomic variables. ThreadSanitizer
+has support for instrumenting accesses as atomic using memory annotations from
+the C/C++ memory model, such as <code>memory_order_relaxed</code> and <code>memory_order_acquire/release</code>.
+In OCaml, all reads and writes to atomic variables are considered to be
+<code>memory_order_acquire</code> and <code>memory_order_release</code> respectively. That should be
+straightforward to implement.</p>
+<p>Finally, it would be good to run the instrumented compiler on some large projects
+such as Lwt. That would be a good test to see how the tool performs in the wild.</p>
+<h4 id=acknowledgements>Acknowledgements</h4>
+<p>Thanks to Dmitry Vyukov on the ThreadSanitizer Google mailing list for
+suggesting to use suppressions.</p>
+</div>
+</body>
+</html>

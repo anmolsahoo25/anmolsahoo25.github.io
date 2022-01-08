@@ -106,10 +106,24 @@ instrumenting calls to ThreadSanitizer methods.</p>
 For example, the above expression could be represented as (the following is not
 valid OCaml code, it is just for representation) -</p>
 <pre tabindex=0><code>Clet (x, Cconst_int 10, Cop(Caddi, [x,Cconst_int 5]))
-</code></pre><p>Simiarly, we have two specific operations called <code>Cload</code> and <code>Cstore</code> that we would like
-to instrument. Thus our function takes a <code>Cmm</code> expression and recurses through
-the structure, and adds a call to the correct ThreadSanitizer function after
-memory accesses.</p>
+</code></pre><p>The operations we are interested in are called <code>Cload</code> and <code>Cstore</code> -</p>
+<div class=highlight><pre tabindex=0 style=background-color:#f8f8f8;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-ocaml data-lang=ocaml><span style=color:#666>|</span> <span style=color:#00f>Cload</span> <span style=color:#a2f;font-weight:700>of</span> <span style=color:#666>{</span> memory_chunk<span style=color:#666>:</span> memory_chunk <span style=color:#666>;</span> mutability<span style=color:#666>:</span> <span style=color:#00f;font-weight:700>Asttypes</span>.mutable_flag <span style=color:#666>;</span> is_atomic<span style=color:#666>:</span> <span style=color:#0b0;font-weight:700>bool</span> <span style=color:#666>}</span>
+<span style=color:#666>|</span> <span style=color:#00f>Cstore</span> <span style=color:#a2f;font-weight:700>of</span> memory_chunk <span style=color:#666>*</span> <span style=color:#00f;font-weight:700>Lambda</span>.initialization_or_assignment
+</code></pre></div><p>We would like to call the necessary <code>__tsan_read/writeN</code> functions after these
+operations. Thus our instrumentation pass takes a <code>Cmm</code> expression and recurses
+through the structure, and adds a call to the correct ThreadSanitizer function
+after memory accesses. The <code>memory_chunk</code> parameter denotes the size of the access
+and the argument to the operation is the memory address in question. There are the
+two pieces of information we need for calling ThreadSanitizer functions.</p>
+<p>There are a few things we need to keep in mind which are particular to OCaml.
+Loads in OCaml are marked to denote if they are to mutable fields or not. Thus,
+we only need to instrument mutable loads, as there will not be any stores to
+immutable fields. This should reduce the overhead of instrumentation.</p>
+<p>Also, for stores we only need to instrument assignment stores, as
+initialization stores have a barrier to ensure that they are visible to all
+threads in a synchronized fashion.</p>
+<p>Thanks to <a href=https://kcsrk.info target=_blank>KC</a>
+for pointing this out!</p>
 <h4 id=experiments>Experiments</h4>
 <p>All right! Let&rsquo;s see if we can finally detect races now. A very simple example -</p>
 <div class=highlight><pre tabindex=0 style=background-color:#f8f8f8;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-ocaml data-lang=ocaml><span style=color:#a2f;font-weight:700>type</span> t <span style=color:#666>=</span> <span style=color:#666>{</span> <span style=color:#a2f;font-weight:700>mutable</span> x <span style=color:#666>:</span> <span style=color:#0b0;font-weight:700>int</span> <span style=color:#666>}</span>

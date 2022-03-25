@@ -8,7 +8,7 @@ code that would alert end-users to properly synchnorize their code"
 ---
 
 Races! A word that programmers need to avoid while writing concurrent code.
-Thankfully, we have ThreadSanitizer $\textemdash$ a race detector developed as
+Thankfully, we have ThreadSanitizer — a race detector developed as
 part of LLVM. Now with OCaml on its way to getting multicore support, I thought
 it would be a good time to see how we could integrate ThreadSanitizer with the
 OCaml compiler. This post would should be a fun trip through parallelism in

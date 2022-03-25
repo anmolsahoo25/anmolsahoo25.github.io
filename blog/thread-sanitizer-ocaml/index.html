@@ -1,5 +1,5 @@
 <!doctype html><html><head><meta charset=utf-8><title>ThreadSanitizer + OCaml</title><link rel=preconnect href=https://fonts.googleapis.com><link rel=preconnect href=https://fonts.gstatic.com crossorigin><link rel=stylesheet href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;700&display=swap"><link rel=stylesheet href=/sakura.css></head><body><div class=container><table><tr><td><a href=/>Home</a></td><td><a href=/blog>Blog</a></td><td><p style=margin-bottom:0;color:#7f8c8d>Next</p></td><td><p style=margin-bottom:0;color:#7f8c8d>Prev</p></td></tr></table><h1>ThreadSanitizer + OCaml</h1><p>Jan 1, 2022</p><p>Races! A word that programmers need to avoid while writing concurrent code.
-Thankfully, we have ThreadSanitizer $\textemdash$ a race detector developed as
+Thankfully, we have ThreadSanitizer — a race detector developed as
 part of LLVM. Now with OCaml on its way to getting multicore support, I thought
 it would be a good time to see how we could integrate ThreadSanitizer with the
 OCaml compiler. This post would should be a fun trip through parallelism in
